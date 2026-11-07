@@ -1,0 +1,36 @@
+# Local editor configuration
+.vscode/
+.idea/
+
+# Build products (keep the supplied Vdma_top C++ model and sample outputs)
+/obj/
+/build/
+/os
+/sched
+/mem
+/pdg
+/dma_testbench
+*.o
+*.a
+*.so
+*.exe
+*.vcd
+*.fst
+/src/syscalltbl.lst
+
+# Local results and temporary files
+/test-results/
+/tmp/
+*.log
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Credentials and personal environment
+.env
+.env.*
+!.env.example
+.aws/
+.codex/
+.agents/
