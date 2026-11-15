@@ -82,7 +82,7 @@ int dpi_dma_copy(struct pcb_t *caller, uint64_t src_offset, uint64_t dst_offset,
         // Pattern cycles through 0x01 to min(length, 255)
         psrc[i] = (uint8_t)((i % pattern_length) + 1);
     }
-
+    
     printf("Before copy:\n");
     printf("  src[0] = 0x%02x, src[1] = 0x%02x\n"
            "  src[2] = 0x%02x, src[3] = 0x%02x\n"
@@ -202,7 +202,38 @@ int main(int argc, char** argv) {
     caller->mm = caller->krnl->mm;
     caller->pid = 0;  // Set a default PID
 
+    // Fill destination + guard area with a 0xAA marker before DMA, so we can detect missing writes and overruns
+
+    uint8_t * dst = (uint8_t *) memory_bank_get_ptr(destination);
+    memset(dst, 0xAA, length + 8);
+
     int result = do_dma(caller, source, destination, length);
+
+    // Data and Guard test, compare destination with source
+
+    uint8_t * src = (uint8_t *) memory_bank_get_ptr(source);
+    int data_errors = 0;
+    int first_bad = -1;
+    for(uint64_t i = 0; i < length; i++){
+        if(src[i] != dst[i]){
+            data_errors++;
+            if(first_bad == -1) first_bad = i;
+        }
+    }
+    int guard_errors = 0;
+    for(uint64_t i = length; i < length + 8; i++){
+        if(dst[i] != 0xAA){
+            guard_errors++;
+        }
+    }
+
+    //  Print verification result
+
+    printf("VERIFY data : %s (%d errors, first bad byte = %d)\n",
+       data_errors == 0 ? "PASS" : "FAIL", data_errors, first_bad);
+
+    printf("VERIFY guard: %s (%d of %d guard bytes overwritten)\n",
+      guard_errors == 0? "PASS" : "FAIL", guard_errors, 8);
 
     // Cleanup
     free(caller->krnl->active_mswp);
@@ -211,6 +242,6 @@ int main(int argc, char** argv) {
     free(caller->krnl);
     free(caller);
 
-    return result;
+    return (result != 0 || data_errors != 0 || guard_errors != 0) ? 1 : 0;
 }
 #endif
