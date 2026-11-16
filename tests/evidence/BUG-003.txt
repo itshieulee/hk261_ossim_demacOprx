@@ -1,0 +1,37 @@
+BUG-003: CPU Idle Infinite Loop
+Test: SCHED-005
+Commit: 29c6b5e
+Observed exit code: 124
+
+=== Initial output ===
+Time slot   0
+ld_routine
+Time slot   1
+Time slot   2
+Time slot   3
+Time slot   4
+Initialized dma_rtl simulation
+Time slot   5
+	Loaded a process at input/proc/s1, PID: 1 PRIO: 0
+	CPU 1: Dispatched process  1
+Time slot   6
+Time slot   7
+
+=== CPU events ===
+	Loaded a process at input/proc/s1, PID: 1 PRIO: 0
+	CPU 1: Dispatched process  1
+	CPU 1: Dispatched process  1
+	CPU 1: Dispatched process  1
+	CPU 1: Dispatched process  1
+	CPU 1: Processed  1 has finished
+	CPU 1 stopped
+
+=== Final output ===
+Time slot 3461154
+Time slot 3461155
+Time slot 3461156
+Time slot 3461157
+Time slot 3461158
+Time slot 3461159
+Time slot 3461160
+Time slot 3461161

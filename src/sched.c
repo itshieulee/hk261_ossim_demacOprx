@@ -22,6 +22,8 @@ static struct queue_t running_list;
 #ifdef MLQ_SCHED
 static struct queue_t mlq_ready_queue[MAX_PRIO];
 static int slot[MAX_PRIO];
+// Biến trạng thái để nhớ hàng đợi đang được cấp CPU
+static int current_prio = 0; 
 #endif
 
 int queue_empty(void) {
@@ -63,9 +65,40 @@ struct pcb_t * get_mlq_proc(void) {
 	/*TODO: get a process from PRIORITY [ready_queue].
 	 *      It worth to protect by a mechanism.
 	 * */
+    int searched = 0;
+    
+    // Duyệt qua các hàng đợi để tìm tiến trình
+    while (searched < MAX_PRIO) {
+        // Nếu hàng đợi hiện tại trống hoặc hết slot, chuyển sang hàng đợi tiếp theo
+        if (empty(&mlq_ready_queue[current_prio]) || slot[current_prio] == 0) {
+            current_prio++;
+            searched++;
+            
+            // Nếu đã duyệt hết MAX_PRIO hàng đợi, reset vòng lặp (round)
+            if (current_prio >= MAX_PRIO) {
+                current_prio = 0;
+                for (int i = 0; i < MAX_PRIO; i++) {
+                    slot[i] = MAX_PRIO - i;
+                }
+            }
+            continue;
+        }
 
-	if (proc != NULL)
+        // Lấy tiến trình hợp lệ từ hàng đợi hiện tại
+        proc = dequeue(&mlq_ready_queue[current_prio]);
+        if (proc != NULL) {
+            slot[current_prio]--; // Tiêu tốn 1 slot
+            break;
+        }
+    }
+	pthread_mutex_unlock(&queue_lock); // Thêm unlock tránh kẹt CPU
+
+	if (proc != NULL) {
+	    // Bắt buộc lock khi thao tác với running_list
+	    pthread_mutex_lock(&queue_lock);
 		enqueue(&running_list, proc);
+		pthread_mutex_unlock(&queue_lock);
+    }
 	return proc;	
 }
 
@@ -78,6 +111,9 @@ void put_mlq_proc(struct pcb_t * proc) {
 	 *       It worth to protect by a mechanism.
 	 * 
 	 */
+	pthread_mutex_lock(&queue_lock);
+	purgequeue(&running_list, proc); // Dọn dẹp tiến trình khỏi danh sách đang chạy
+	pthread_mutex_unlock(&queue_lock);
 
 	pthread_mutex_lock(&queue_lock);
 	enqueue(&mlq_ready_queue[proc->prio], proc);
@@ -93,6 +129,8 @@ void add_mlq_proc(struct pcb_t * proc) {
 	 *       It worth to protect by a mechanism.
 	 * 
 	 */
+	// add_mlq_proc thường dùng cho tiến trình mới sinh ra, chưa nằm trong running_list
+    // Nên không cần gọi purgequeue ở đây.
        
 	pthread_mutex_lock(&queue_lock);
 	enqueue(&mlq_ready_queue[proc->prio], proc);
