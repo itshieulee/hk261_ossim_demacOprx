@@ -30,6 +30,8 @@ int __sys_memmap(struct krnl_t *krnl, uint32_t pid, struct sc_regs* regs)
     * TODO THIS DUMMY CREATE EMPTY PROC TO AVOID COMPILER NOTIFY 
     *      need to be eliminated
 	*/
+   extern int kernel_sys_memmap(struct krnl_t *, uint32_t, struct sc_regs *);
+   return kernel_sys_memmap(krnl, pid, regs);
    struct pcb_t *caller = malloc(sizeof(struct pcb_t));
    caller->krnl = malloc(sizeof(struct krnl_t));
 
