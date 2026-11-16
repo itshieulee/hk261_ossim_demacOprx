@@ -1,0 +1,29 @@
+=== QUEUE UNIT TESTS ===
+QUEUE: PASS
+
+=== SCHEDULER TESTS ===
+SCHED-001: PASS
+SCHED-002: PASS
+SCHED-003: PASS
+SCHED-004: PASS
+SCHED-005: XFAIL (known BUG-003, timeout)
+SCHED-006: PASS (quota=140)
+
+=== SCHED-007: STABILITY (10 RUNS) ===
+RUN 1: PASS
+RUN 2: PASS
+RUN 3: PASS
+RUN 4: PASS
+RUN 5: PASS
+RUN 6: PASS
+RUN 7: PASS
+RUN 8: PASS
+RUN 9: PASS
+RUN 10: PASS
+SCHED-007: PASS (10/10)
+
+=== FINAL SUMMARY ===
+Scheduler PASS: 6/7
+Known failures (XFAIL): 1
+Unexpected failures: 0
+Results saved to: tests/evidence/test_summary.txt
