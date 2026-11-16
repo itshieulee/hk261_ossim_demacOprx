@@ -424,6 +424,7 @@ int libkmem_malloc(struct pcb_t * caller, uint32_t size, uint32_t reg_index)
    * TODO: provide OS level management
    *       and forward the request to helper
    */
+  return libsyscall(caller, 17, 6, size, reg_index);
 //addr_t  addr;
 //int val = ...
 
@@ -446,6 +447,15 @@ addr_t __kmalloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t 
 {
   /* TODO: provide OS kernel memory allocation
    *       update krnl_pgd for OS kernel level management */
+  {
+    if (!caller || !caller->krnl || !alloc_addr || vmaid != 0 ||
+        rgid < 0 || rgid >= PAGING_MAX_SYMTBL_SZ) return (addr_t)-1;
+    struct sc_regs regs = {0};
+    regs.a1 = 6; regs.a2 = size; regs.a3 = (arg_t)rgid;
+    if (_syscall(caller->krnl, caller->pid, 17, &regs)) return (addr_t)-1;
+    *alloc_addr = regs.a4;
+    return 0;
+  }
 
   //struct krnl_t *krnl = caller->krnl;
   //krnl->symrgtbl...
@@ -519,6 +529,9 @@ int libkmem_copy_to_user(struct pcb_t *caller, uint32_t source, uint32_t destina
 int __read_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE *data)
 {
   /* TODO: provide OS memory operator for kernel memory region */
+  extern int kernel_memory_byte(struct pcb_t *, uint32_t, addr_t, BYTE *, int);
+  if (vmaid != 0 || rgid < 0) return -1;
+  return kernel_memory_byte(caller, (uint32_t)rgid, offset, data, 0);
   //krnl->krnl_pgd ... or krnl->pgd ... based on kmem implementation strategy
 
   return 0;
@@ -534,6 +547,9 @@ int __read_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, 
 int __write_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE value)
 {
   /* TODO: provide OS memory operator for kernel memory region */
+  extern int kernel_memory_byte(struct pcb_t *, uint32_t, addr_t, BYTE *, int);
+  if (vmaid != 0 || rgid < 0) return -1;
+  return kernel_memory_byte(caller, (uint32_t)rgid, offset, &value, 1);
   //krnl->krnl_pgd ... or krnl->pgd ... based on kmem implementation strategy
 
   return 0;
@@ -549,6 +565,7 @@ int __write_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset,
 int __read_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE *data)
 {
   /* TODO: provide OS level management user memory access */
+  return -1;
   //krnl->pgd ... or krnl->krnl_pgd  ... based on kmem implementation strategy
 
    return 0;
@@ -565,6 +582,7 @@ int __read_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BY
 int __write_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE value)
 {
   /* TODO: provide OS level management user memory access */
+  return -1;
   //krnl->pgd ... or krnl->krnl_pgd  ... based on kmem implementation strategy
 
   return 0;
