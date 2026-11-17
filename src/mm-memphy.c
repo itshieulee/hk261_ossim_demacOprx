@@ -13,210 +13,224 @@
  * PAGING based Memory Management
  * Memory physical module mm/mm-memphy.c
  */
-
-#include "mm.h"
 #include "mm64.h"
-#include <stdio.h>
+#include <limits.h>
+#include <pthread>
 #include <stdlib.h>
 #include <string.h>
 
-/*
- *  MEMPHY_mv_csr - move MEMPHY cursor
- *  @mp: memphy struct
- *  @offset: offset
- */
-int MEMPHY_mv_csr(struct memphy_struct *mp, addr_t offset)
+/* Shared by RAM/SWAP devices. Coarse locking keeps the existing struct ABI. */
+static pthread_mutex_t memphy_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int frame_size(void)
 {
-   int numstep = 0;
-
-   mp->cursor = 0;
-   while (numstep < offset && numstep < mp->maxsz)
-   {
-      /* Traverse sequentially */
-      mp->cursor = (mp->cursor + 1) % mp->maxsz;
-      numstep++;
-   }
-
-   return 0;
+#ifdef MM64
+    return PAGING64_PAGESZ;
+#else
+    return PAGING_PAGESZ;
+#endif
 }
 
-/*
- *  MEMPHY_seq_read - read MEMPHY device
- *  @mp: memphy struct
- *  @addr: address
- *  @value: obtained value
- */
-int MEMPHY_seq_read(struct memphy_struct *mp, addr_t addr, BYTE *value)
+static void destroy_frame_list(struct framephy_struct *node)
 {
-   if (mp == NULL)
-      return -1;
-
-   if (!mp->rdmflg)
-      return -1; /* Not compatible mode for sequential read */
-
-   MEMPHY_mv_csr(mp, addr);
-   *value = (BYTE)mp->storage[addr];
-
-   return 0;
+    while (node != NULL) {
+        struct framephy_struct *next = node->fp_next;
+        free(node);
+        node = next;
+    }
 }
 
-/*
- *  MEMPHY_read read MEMPHY device
- *  @mp: memphy struct
- *  @addr: address
- *  @value: obtained value
- */
-int MEMPHY_read(struct memphy_struct *mp, addr_t addr, BYTE *value)
+/* Caller holds memphy_lock. Build the replacement before discarding old data. */
+static int format_locked(struct memphy_struct *mp, int pagesz)
 {
-   if (mp == NULL)
-      return -1;
-
-   if (mp->rdmflg)
-      *value = mp->storage[addr];
-   else /* Sequential access device */
-      return MEMPHY_seq_read(mp, addr, value);
-
-   return 0;
+    struct framephy_struct *head = NULL;
+    struct framephy_struct **tail = &head;
+    int count;
+    if (pagesz != frame_size() || mp->maxsz < 0 || mp->used_fp_list != NULL)
+        return -1;
+    count = mp->maxsz / pagesz;
+    for (int i = 0; i < count; ++i) {
+        struct framephy_struct *node = calloc(1, sizeof(*node));
+        if (node == NULL) {
+            destroy_frame_list(head);
+            return -1;
+        }
+        node->fpn = (addr_t)i;     /* Frame zero is valid. */
+        *tail = node;
+        tail = &node->fp_next;
+    }
+    destroy_frame_list(mp->free_fp_list);
+    mp->free_fp_list = head;
+    return 0;
 }
 
-/*
- *  MEMPHY_seq_write - write MEMPHY device
- *  @mp: memphy struct
- *  @addr: address
- *  @data: written data
- */
-int MEMPHY_seq_write(struct memphy_struct *mp, addr_t addr, BYTE value)
-{
-
-   if (mp == NULL)
-      return -1;
-
-   if (!mp->rdmflg)
-      return -1; /* Not compatible mode for sequential read */
-
-   MEMPHY_mv_csr(mp, addr);
-   mp->storage[addr] = value;
-
-   return 0;
-}
-
-/*
- *  MEMPHY_write-write MEMPHY device
- *  @mp: memphy struct
- *  @addr: address
- *  @data: written data
- */
-int MEMPHY_write(struct memphy_struct *mp, addr_t addr, BYTE data)
-{
-   if (mp == NULL)
-      return -1;
-
-   if (mp->rdmflg)
-      mp->storage[addr] = data;
-   else /* Sequential access device */
-      return MEMPHY_seq_write(mp, addr, data);
-
-   return 0;
-}
-
-/*
- *  MEMPHY_format-format MEMPHY device
- *  @mp: memphy struct
- */
 int MEMPHY_format(struct memphy_struct *mp, int pagesz)
 {
-   /* This setting come with fixed constant PAGESZ */
-   int numfp = mp->maxsz / pagesz;
-   struct framephy_struct *newfst, *fst;
-   int iter = 0;
+    int result;
+    if (mp == NULL)
+        return -1;
+    pthread_mutex_lock(&memphy_lock);
+    result = format_locked(mp, pagesz);
+    pthread_mutex_unlock(&memphy_lock);
+    return result;
+}
 
-   if (numfp <= 0)
-      return -1;
-
-   /* Init head of free framephy list */
-   fst = malloc(sizeof(struct framephy_struct));
-   fst->fpn = iter;
-   mp->free_fp_list = fst;
-
-   /* We have list with first element, fill in the rest num-1 element member*/
-   for (iter = 1; iter < numfp; iter++)
-   {
-      newfst = malloc(sizeof(struct framephy_struct));
-      newfst->fpn = iter;
-      newfst->fp_next = NULL;
-      fst->fp_next = newfst;
-      fst = newfst;
-   }
-
-   return 0;
+/* Initialize a fresh object; destroy before reinitializing.
+ * Zero-sized SWAP banks occur in the supplied inputs and are valid.
+ */
+int init_memphy(struct memphy_struct *mp, addr_t max_size, int randomflg)
+{
+    if (mp == NULL)
+        return -1;
+    memset(mp, 0, sizeof(*mp));
+    if (max_size > INT_MAX || (max_size != 0 && max_size < (addr_t)frame_size()))
+        return -1;                /* The supplied maxsz field has type int. */
+    mp->maxsz = (int)max_size;
+    mp->rdmflg = randomflg != 0;
+    if (max_size != 0) {
+        mp->storage = calloc((size_t)max_size, sizeof(*mp->storage));
+        if (mp->storage == NULL)
+            goto fail;
+    }
+    if (MEMPHY_format(mp, frame_size()) != 0)
+        goto fail;
+    return 0;
+fail:
+    MEMPHY_destroy(mp);
+    return -1;
 }
 
 int MEMPHY_get_freefp(struct memphy_struct *mp, addr_t *retfpn)
 {
-   struct framephy_struct *fp = mp->free_fp_list;
+    if (mp == NULL || retfpn == NULL)
+        return -1;
+    pthread_mutex_lock(&memphy_lock);
 
-   if (fp == NULL)
-      return -1;
-
-   /* 
-    * TODO manage free frame list
-    */
-   //*retfpn ..
-   // cap nhat lai danh sach free frame
-
-   /* 
-    * TODO MEMPHY is iteratively used up until its exhausted
-    * No garbage collector acting then it not been released
-    */
-   free(fp);
-
-   return 0;
-}
-
-int MEMPHY_dump(struct memphy_struct *mp)
-{
-  /*
-   * TODO dump memphy contnt mp->storage
-   *     for tracing the memory content
-   */
-
-   return 0;
+    struct framephy_struct *node;
+    node = mp->free_fp_list;
+    if (node == NULL) {
+        pthread_mutex_unlock(&memphy_lock);
+        return -1;
+    }
+    mp->free_fp_list = node->fp_next;
+    *retfpn = node->fpn;
+    /* Reuse this node on release; no allocation can fail during free. */
+    node->fp_next = mp->used_fp_list;
+    mp->used_fp_list = node;
+    pthread_mutex_unlock(&memphy_lock);
+    return 0;
 }
 
 int MEMPHY_put_freefp(struct memphy_struct *mp, addr_t fpn)
 {
-   struct framephy_struct *fp = mp->free_fp_list;
-   struct framephy_struct *newnode = malloc(sizeof(struct framephy_struct));
-
-   /* Create new node with value fpn */
-   newnode->fpn = fpn;
-   newnode->fp_next = fp;
-   mp->free_fp_list = newnode;
-
-   return 0;
+    struct framephy_struct **link;
+    struct framephy_struct *node;
+    if (mp == NULL)
+        return -1;
+    pthread_mutex_lock(&memphy_lock);
+    if (mp->maxsz <= 0 || fpn >= (addr_t)(mp->maxsz / frame_size())) {
+        pthread_mutex_unlock(&memphy_lock);
+        return -1;
+    }
+    /* O(F) search also rejects freeing an unallocated/already-free frame. */
+    link = &mp->used_fp_list;
+    while (*link != NULL && (*link)->fpn != fpn)
+        link = &(*link)->fp_next;
+    if (*link == NULL) {
+        pthread_mutex_unlock(&memphy_lock);
+        return -1;
+    }
+    node = *link;
+    *link = node->fp_next;
+    node->owner = NULL;
+    node->fp_next = mp->free_fp_list;
+    mp->free_fp_list = node;
+    pthread_mutex_unlock(&memphy_lock);
+    return 0;
 }
 
-/*
- *  Init MEMPHY struct
- */
-int init_memphy(struct memphy_struct *mp, addr_t max_size, int randomflg)
+static int valid_byte(struct memphy_struct *mp, addr_t address)
 {
-   mp->storage = (BYTE *)malloc(max_size * sizeof(BYTE));
-   mp->maxsz = max_size;
-   memset(mp->storage, 0, max_size * sizeof(BYTE));
-
-#ifdef MM64
-   MEMPHY_format(mp, PAGING64_PAGESZ);
-#else
-   MEMPHY_format(mp, PAGING_PAGESZ);
-#endif
-
-   mp->rdmflg = (randomflg != 0) ? 1 : 0;
-
-   if (!mp->rdmflg) /* Not Ramdom acess device, then it serial device*/
-      mp->cursor = 0;
-
-   return 0;
+    return mp->storage != NULL && mp->maxsz > 0 && address < (addr_t)mp->maxsz;
 }
 
-// #endif
+int MEMPHY_mv_csr(struct memphy_struct *mp, addr_t offset)
+{
+    int result = -1;
+    if (mp == NULL)
+        return -1;
+    pthread_mutex_lock(&memphy_lock);
+    if (valid_byte(mp, offset)) {
+        mp->cursor = (int)offset;
+        result = 0;
+    }
+    pthread_mutex_unlock(&memphy_lock);
+    return result;
+}
+
+int MEMPHY_read(struct memphy_struct *mp, addr_t addr, BYTE *value)
+{
+    if (mp == NULL || value == NULL)
+        return -1;
+    pthread_mutex_lock(&memphy_lock);
+    if (!valid_byte(mp, addr)) {
+        pthread_mutex_unlock(&memphy_lock);
+        return -1;
+    }
+    if (!mp->rdmflg)
+        mp->cursor = (int)addr;
+    *value = mp->storage[addr];
+    pthread_mutex_unlock(&memphy_lock);
+    return 0;
+}
+
+int MEMPHY_write(struct memphy_struct *mp, addr_t addr, BYTE value)
+{
+    if (mp == NULL)
+        return -1;
+    pthread_mutex_lock(&memphy_lock);
+    if (!valid_byte(mp, addr)) {
+        pthread_mutex_unlock(&memphy_lock);
+        return -1;
+    }
+    if (!mp->rdmflg)
+        mp->cursor = (int)addr;
+    mp->storage[addr] = value;
+    pthread_mutex_unlock(&memphy_lock);
+    return 0;
+}
+
+int MEMPHY_seq_read(struct memphy_struct *mp, addr_t addr, BYTE *value)
+{
+    return mp != NULL && !mp->rdmflg ? MEMPHY_read(mp, addr, value) : -1;
+}
+
+int MEMPHY_seq_write(struct memphy_struct *mp, addr_t addr, BYTE value)
+{
+    return mp != NULL && !mp->rdmflg ? MEMPHY_write(mp, addr, value) : -1;
+}
+
+int MEMPHY_dump(struct memphy_struct *mp)
+{
+    if (mp == NULL)
+        return -1;
+    pthread_mutex_lock(&memphy_lock);
+    for (int i = 0; i < mp->maxsz; ++i)
+        if (mp->storage[i] != 0)
+            printf("RAM[0x%x] = 0x%02x\n", (unsigned)i,
+                   (unsigned)(unsigned char)mp->storage[i]);
+    pthread_mutex_unlock(&memphy_lock);
+    return 0;
+}
+
+/* Lifecycle operation: stop all users of this device before calling it. */
+void MEMPHY_destroy(struct memphy_struct *mp)
+{
+    if (mp == NULL) return;
+    pthread_mutex_lock(&memphy_lock);
+    destroy_frame_list(mp->free_fp_list);
+    destroy_frame_list(mp->used_fp_list);
+    free(mp->storage);
+    memset(mp, 0, sizeof(*mp));
+    pthread_mutex_unlock(&memphy_lock);
+}
