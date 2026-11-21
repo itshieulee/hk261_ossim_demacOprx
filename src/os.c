@@ -11,6 +11,7 @@
 #include "cpu.h"
 #include "timer.h"
 #include "sched.h"
+extern void finish_proc(struct pcb_t * proc);
 #include "loader.h"
 #include "mm.h"
 #ifdef MM64
@@ -73,14 +74,11 @@ static void * cpu_routine(void * args) {
 			/* No process is running, the we load new process from
 		 	* ready queue */
 			proc = get_proc();
-			if (proc == NULL) {
-                           next_slot(timer_id);
-                           continue; /* First load failed. skip dummy load */
-                        }
 		}else if (proc->pc == proc->code->size) {
 			/* The porcess has finish it job */
 			printf("\tCPU %d: Processed %2d has finished\n",
 				id ,proc->pid);
+			finish_proc(proc);
 			free(proc);
 			proc = get_proc();
 			time_left = 0;
